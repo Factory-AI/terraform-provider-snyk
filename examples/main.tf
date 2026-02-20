@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     snyk = {
-      source  = "example/snyk"
+      source  = "factory/snyk"
       version = "~> 0.1"
     }
   }

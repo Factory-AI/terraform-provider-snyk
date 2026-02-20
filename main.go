@@ -17,7 +17,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/example/snyk",
+		Address: "registry.terraform.io/factory/snyk",
 		Debug:   debug,
 	}
 
