@@ -21,6 +21,7 @@ type SnykProvider struct {
 
 // SnykProviderModel holds the provider-level configuration values.
 type SnykProviderModel struct {
+	APIKey       types.String `tfsdk:"api_key"`
 	ClientID     types.String `tfsdk:"client_id"`
 	ClientSecret types.String `tfsdk:"client_secret"`
 	OrgID        types.String `tfsdk:"org_id"`
@@ -39,16 +40,27 @@ func (p *SnykProvider) Metadata(_ context.Context, _ provider.MetadataRequest, r
 
 func (p *SnykProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages resources in Snyk.io via the Snyk v1 API.",
+		Description: "Manages resources in Snyk.io via the Snyk API.",
 		Attributes: map[string]schema.Attribute{
+			"api_key": schema.StringAttribute{
+				Description: "Snyk API token. Works with all API endpoints. " +
+					"Can also be set via SNYK_API_KEY. " +
+					"Mutually exclusive with client_id/client_secret.",
+				Optional:  true,
+				Sensitive: true,
+			},
 			"client_id": schema.StringAttribute{
-				Description: "OAuth 2.0 client ID for the Snyk service account. Can also be set via SNYK_CLIENT_ID.",
-				Optional:    true,
+				Description: "OAuth 2.0 client ID for the Snyk service account. " +
+					"Can also be set via SNYK_CLIENT_ID. " +
+					"Must be paired with client_secret. " +
+					"Note: the v1 import endpoint does not support OAuth; use api_key if you need imports.",
+				Optional: true,
 			},
 			"client_secret": schema.StringAttribute{
-				Description: "OAuth 2.0 client secret for the Snyk service account. Can also be set via SNYK_CLIENT_SECRET.",
-				Optional:    true,
-				Sensitive:   true,
+				Description: "OAuth 2.0 client secret for the Snyk service account. " +
+					"Can also be set via SNYK_CLIENT_SECRET.",
+				Optional:  true,
+				Sensitive: true,
 			},
 			"org_id": schema.StringAttribute{
 				Description: "Snyk organization ID. Can also be set via SNYK_ORG_ID.",
@@ -65,25 +77,40 @@ func (p *SnykProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
+	apiKey := os.Getenv("SNYK_API_KEY")
+	if !config.APIKey.IsNull() && !config.APIKey.IsUnknown() {
+		apiKey = config.APIKey.ValueString()
+	}
+
 	clientID := os.Getenv("SNYK_CLIENT_ID")
 	if !config.ClientID.IsNull() && !config.ClientID.IsUnknown() {
 		clientID = config.ClientID.ValueString()
-	}
-	if clientID == "" {
-		resp.Diagnostics.AddError(
-			"Missing Snyk client ID",
-			"Set the client_id provider attribute or the SNYK_CLIENT_ID environment variable.",
-		)
 	}
 
 	clientSecret := os.Getenv("SNYK_CLIENT_SECRET")
 	if !config.ClientSecret.IsNull() && !config.ClientSecret.IsUnknown() {
 		clientSecret = config.ClientSecret.ValueString()
 	}
-	if clientSecret == "" {
+
+	hasAPIKey := apiKey != ""
+	hasOAuth := clientID != "" || clientSecret != ""
+
+	if !hasAPIKey && !hasOAuth {
 		resp.Diagnostics.AddError(
-			"Missing Snyk client secret",
-			"Set the client_secret provider attribute or the SNYK_CLIENT_SECRET environment variable.",
+			"Missing Snyk credentials",
+			"Set either api_key (SNYK_API_KEY) or client_id + client_secret (SNYK_CLIENT_ID, SNYK_CLIENT_SECRET).",
+		)
+	}
+	if hasAPIKey && hasOAuth {
+		resp.Diagnostics.AddError(
+			"Conflicting Snyk credentials",
+			"Provide either api_key or client_id + client_secret, not both.",
+		)
+	}
+	if hasOAuth && (clientID == "" || clientSecret == "") {
+		resp.Diagnostics.AddError(
+			"Incomplete OAuth credentials",
+			"Both client_id and client_secret must be provided together.",
 		)
 	}
 
@@ -102,7 +129,7 @@ func (p *SnykProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
-	client := snyk.NewClient(clientID, clientSecret, orgID)
+	client := snyk.NewClient(apiKey, clientID, clientSecret, orgID)
 	resp.ResourceData = client
 	resp.DataSourceData = client
 }

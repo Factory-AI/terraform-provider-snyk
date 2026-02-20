@@ -1,0 +1,4 @@
+[tasks.build]
+run = """
+go build -o terraform-provider-snyk .
+"""

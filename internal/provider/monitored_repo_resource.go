@@ -222,17 +222,42 @@ func (r *MonitoredRepoResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 }
 
-// ImportState supports `tofu import snyk_monitored_repo.name "<project-id>[,<project-id>,...]"`.
+// ImportState supports `tofu import snyk_monitored_repo.name "owner/repo"`.
 //
-// The import ID is a comma-separated list of Snyk project IDs. The first
-// project is read to reconstruct owner, repo, branch, and integration type.
+// The provider looks up the Snyk target matching the display name, discovers
+// all projects under it, and reads the first project to derive branch and
+// integration type.
 func (r *MonitoredRepoResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	projectIDs := strings.Split(req.ID, ",")
-	for i, id := range projectIDs {
-		projectIDs[i] = strings.TrimSpace(id)
+	parts := strings.SplitN(req.ID, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Expected \"owner/repo\", got %q.", req.ID),
+		)
+		return
+	}
+	owner, repo := parts[0], parts[1]
+	displayName := owner + "/" + repo
+
+	targetID, err := r.client.FindTargetIDByDisplayName(displayName)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to find Snyk target", err.Error())
+		return
 	}
 
-	// Read the first project to derive owner/repo/branch.
+	projectIDs, err := r.client.ListProjectIDsByTarget(targetID)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to list projects for target", err.Error())
+		return
+	}
+	if len(projectIDs) == 0 {
+		resp.Diagnostics.AddError(
+			"No projects found",
+			fmt.Sprintf("Target %q exists but has no projects.", displayName),
+		)
+		return
+	}
+
 	first, err := r.client.GetProject(projectIDs[0])
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read Snyk project during import", err.Error())
@@ -242,10 +267,6 @@ func (r *MonitoredRepoResource) ImportState(ctx context.Context, req resource.Im
 		resp.Diagnostics.AddError("Project not found", fmt.Sprintf("Snyk project %s does not exist.", projectIDs[0]))
 		return
 	}
-
-	// Project name is typically "<owner>/<repo>:<manifest-file>".
-	// The origin field tells us the integration type.
-	owner, repo := parseProjectName(first.Name)
 
 	state := MonitoredRepoModel{
 		ID:              types.StringValue(strings.Join(projectIDs, ",")),

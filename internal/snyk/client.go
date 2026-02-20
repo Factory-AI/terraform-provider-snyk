@@ -7,18 +7,25 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	baseURL  = "https://api.snyk.io/v1"
-	tokenURL = "https://api.snyk.io/oauth2/token"
+	baseURL    = "https://api.snyk.io/v1"
+	restURL    = "https://api.snyk.io/rest"
+	tokenURL   = "https://api.snyk.io/oauth2/token"
+	apiVersion = "2024-10-15"
 )
 
-// Client is an authenticated Snyk v1 API client.
+// Client is an authenticated Snyk v1 API client. It supports two auth modes:
+//   - API key: uses "token <key>" header (works with all v1 endpoints)
+//   - OAuth 2.0 client credentials: uses "Bearer <token>" header (works with
+//     REST and most v1 endpoints, but NOT the v1 import endpoint)
 type Client struct {
-	clientID     string
+	apiKey       string // set when using API key auth
+	clientID     string // set when using OAuth
 	clientSecret string
 	orgID        string
 	httpClient   *http.Client
@@ -28,9 +35,11 @@ type Client struct {
 	tokenExp time.Time
 }
 
-// NewClient creates a new Snyk API client using OAuth 2.0 client credentials.
-func NewClient(clientID, clientSecret, orgID string) *Client {
+// NewClient creates a Snyk API client. Exactly one auth method must be
+// configured: either apiKey OR (clientID + clientSecret).
+func NewClient(apiKey, clientID, clientSecret, orgID string) *Client {
 	return &Client{
+		apiKey:       apiKey,
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		orgID:        orgID,
@@ -40,9 +49,21 @@ func NewClient(clientID, clientSecret, orgID string) *Client {
 	}
 }
 
-// accessToken returns a valid bearer token, fetching a new one if the cached
-// token is missing or within 30 seconds of expiry.
-func (c *Client) accessToken() (string, error) {
+// authHeader returns the Authorization header value. For API key auth this is
+// immediate; for OAuth it may perform a token exchange.
+func (c *Client) authHeader() (string, error) {
+	if c.apiKey != "" {
+		return "token " + c.apiKey, nil
+	}
+	tok, err := c.oauthToken()
+	if err != nil {
+		return "", err
+	}
+	return "Bearer " + tok, nil
+}
+
+// oauthToken returns a valid bearer token, fetching or refreshing as needed.
+func (c *Client) oauthToken() (string, error) {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 
@@ -86,7 +107,7 @@ func (c *Client) OrgID() string {
 }
 
 func (c *Client) do(method, path string, body interface{}) (*http.Response, error) {
-	tok, err := c.accessToken()
+	auth, err := c.authHeader()
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +126,7 @@ func (c *Client) do(method, path string, body interface{}) (*http.Response, erro
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -114,6 +135,120 @@ func (c *Client) do(method, path string, body interface{}) (*http.Response, erro
 		return nil, fmt.Errorf("executing request: %w", err)
 	}
 	return resp, nil
+}
+
+func (c *Client) doREST(method, path string) (*http.Response, error) {
+	auth, err := c.authHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	fullURL := restURL + path + sep + "version=" + apiVersion
+
+	req, err := http.NewRequest(method, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating REST request: %w", err)
+	}
+
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Accept", "application/vnd.api+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing REST request: %w", err)
+	}
+	return resp, nil
+}
+
+// FindTargetIDByDisplayName searches for a target whose display_name matches
+// "owner/repo" and returns its target ID.
+func (c *Client) FindTargetIDByDisplayName(displayName string) (string, error) {
+	path := fmt.Sprintf("/orgs/%s/targets?display_name=%s&limit=100",
+		c.orgID, url.QueryEscape(displayName))
+
+	resp, err := c.doREST("GET", path)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return "", fmt.Errorf("list targets: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			ID         string `json:"id"`
+			Attributes struct {
+				DisplayName string `json:"display_name"`
+			} `json:"attributes"`
+			Relationships struct {
+				Integration struct {
+					Data struct {
+						Attributes struct {
+							IntegrationType string `json:"integration_type"`
+						} `json:"attributes"`
+					} `json:"data"`
+				} `json:"integration"`
+			} `json:"relationships"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding targets response: %w", err)
+	}
+
+	for _, t := range result.Data {
+		if t.Attributes.DisplayName == displayName {
+			return t.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no target found with display_name %q in org %s", displayName, c.orgID)
+}
+
+// ListProjectIDsByTarget returns all project IDs belonging to a given target.
+func (c *Client) ListProjectIDsByTarget(targetID string) ([]string, error) {
+	var allIDs []string
+	nextPath := fmt.Sprintf("/orgs/%s/projects?target_id=%s&limit=100", c.orgID, targetID)
+
+	for nextPath != "" {
+		resp, err := c.doREST("GET", nextPath)
+		if err != nil {
+			return nil, err
+		}
+
+		var page struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+			Links struct {
+				Next string `json:"next"`
+			} `json:"links"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decoding projects response: %w", err)
+		}
+
+		for _, p := range page.Data {
+			allIDs = append(allIDs, p.ID)
+		}
+
+		nextPath = ""
+		if page.Links.Next != "" {
+			// Strip the restURL prefix if present
+			next := page.Links.Next
+			if strings.HasPrefix(next, restURL) {
+				next = strings.TrimPrefix(next, restURL)
+			}
+			nextPath = next
+		}
+	}
+	return allIDs, nil
 }
 
 func checkStatus(resp *http.Response, expected int) error {

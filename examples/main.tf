@@ -11,9 +11,14 @@ terraform {
 # Credentials can also be supplied via the SNYK_API_KEY and SNYK_ORG_ID
 # environment variables so you don't have to hard-code secrets.
 provider "snyk" {
+  # Option 1: API key (works with all endpoints including import)
+  # api_key = var.snyk_api_key   # or set SNYK_API_KEY
+
+  # Option 2: OAuth 2.0 (does NOT work with v1 import endpoint)
   # client_id     = var.snyk_client_id     # or set SNYK_CLIENT_ID
   # client_secret = var.snyk_client_secret # or set SNYK_CLIENT_SECRET
-  # org_id        = var.snyk_org_id        # or set SNYK_ORG_ID
+
+  # org_id = var.snyk_org_id  # or set SNYK_ORG_ID
 }
 
 # Monitor a public GitHub repository in Snyk.
