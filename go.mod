@@ -1,4 +1,4 @@
-module github.com/example/terraform-provider-snyk
+module github.com/factory-AI/tofu-snyk
 
 go 1.25.0
 

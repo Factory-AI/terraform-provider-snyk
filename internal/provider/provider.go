@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/example/terraform-provider-snyk/internal/snyk"
+	"github.com/factory-AI/tofu-snyk/internal/snyk"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -21,8 +21,9 @@ type SnykProvider struct {
 
 // SnykProviderModel holds the provider-level configuration values.
 type SnykProviderModel struct {
-	APIKey types.String `tfsdk:"api_key"`
-	OrgID  types.String `tfsdk:"org_id"`
+	ClientID     types.String `tfsdk:"client_id"`
+	ClientSecret types.String `tfsdk:"client_secret"`
+	OrgID        types.String `tfsdk:"org_id"`
 }
 
 func New(version string) func() provider.Provider {
@@ -40,13 +41,17 @@ func (p *SnykProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 	resp.Schema = schema.Schema{
 		Description: "Manages resources in Snyk.io via the Snyk v1 API.",
 		Attributes: map[string]schema.Attribute{
-			"api_key": schema.StringAttribute{
-				Description: "Snyk API token. Can also be set via the SNYK_API_KEY environment variable.",
+			"client_id": schema.StringAttribute{
+				Description: "OAuth 2.0 client ID for the Snyk service account. Can also be set via SNYK_CLIENT_ID.",
+				Optional:    true,
+			},
+			"client_secret": schema.StringAttribute{
+				Description: "OAuth 2.0 client secret for the Snyk service account. Can also be set via SNYK_CLIENT_SECRET.",
 				Optional:    true,
 				Sensitive:   true,
 			},
 			"org_id": schema.StringAttribute{
-				Description: "Snyk organization ID. Can also be set via the SNYK_ORG_ID environment variable.",
+				Description: "Snyk organization ID. Can also be set via SNYK_ORG_ID.",
 				Optional:    true,
 			},
 		},
@@ -60,14 +65,25 @@ func (p *SnykProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
-	apiKey := os.Getenv("SNYK_API_KEY")
-	if !config.APIKey.IsNull() && !config.APIKey.IsUnknown() {
-		apiKey = config.APIKey.ValueString()
+	clientID := os.Getenv("SNYK_CLIENT_ID")
+	if !config.ClientID.IsNull() && !config.ClientID.IsUnknown() {
+		clientID = config.ClientID.ValueString()
 	}
-	if apiKey == "" {
+	if clientID == "" {
 		resp.Diagnostics.AddError(
-			"Missing Snyk API key",
-			"Set the api_key provider attribute or the SNYK_API_KEY environment variable.",
+			"Missing Snyk client ID",
+			"Set the client_id provider attribute or the SNYK_CLIENT_ID environment variable.",
+		)
+	}
+
+	clientSecret := os.Getenv("SNYK_CLIENT_SECRET")
+	if !config.ClientSecret.IsNull() && !config.ClientSecret.IsUnknown() {
+		clientSecret = config.ClientSecret.ValueString()
+	}
+	if clientSecret == "" {
+		resp.Diagnostics.AddError(
+			"Missing Snyk client secret",
+			"Set the client_secret provider attribute or the SNYK_CLIENT_SECRET environment variable.",
 		)
 	}
 
@@ -86,7 +102,7 @@ func (p *SnykProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
-	client := snyk.NewClient(apiKey, orgID)
+	client := snyk.NewClient(clientID, clientSecret, orgID)
 	resp.ResourceData = client
 	resp.DataSourceData = client
 }

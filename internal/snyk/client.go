@@ -6,27 +6,79 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 )
 
-const baseURL = "https://api.snyk.io/v1"
+const (
+	baseURL  = "https://api.snyk.io/v1"
+	tokenURL = "https://api.snyk.io/oauth2/token"
+)
 
 // Client is an authenticated Snyk v1 API client.
 type Client struct {
-	apiKey     string
-	orgID      string
-	httpClient *http.Client
+	clientID     string
+	clientSecret string
+	orgID        string
+	httpClient   *http.Client
+
+	tokenMu  sync.Mutex
+	token    string
+	tokenExp time.Time
 }
 
-// NewClient creates a new Snyk API client.
-func NewClient(apiKey, orgID string) *Client {
+// NewClient creates a new Snyk API client using OAuth 2.0 client credentials.
+func NewClient(clientID, clientSecret, orgID string) *Client {
 	return &Client{
-		apiKey: apiKey,
-		orgID:  orgID,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		orgID:        orgID,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// accessToken returns a valid bearer token, fetching a new one if the cached
+// token is missing or within 30 seconds of expiry.
+func (c *Client) accessToken() (string, error) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	if c.token != "" && time.Now().Before(c.tokenExp.Add(-30*time.Second)) {
+		return c.token, nil
+	}
+
+	resp, err := c.httpClient.PostForm(tokenURL, url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {c.clientID},
+		"client_secret": {c.clientSecret},
+	})
+	if err != nil {
+		return "", fmt.Errorf("fetching OAuth token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("OAuth token request failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding OAuth token response: %w", err)
+	}
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("OAuth token response contained no access_token")
+	}
+
+	c.token = result.AccessToken
+	c.tokenExp = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	return c.token, nil
 }
 
 func (c *Client) OrgID() string {
@@ -34,6 +86,11 @@ func (c *Client) OrgID() string {
 }
 
 func (c *Client) do(method, path string, body interface{}) (*http.Response, error) {
+	tok, err := c.accessToken()
+	if err != nil {
+		return nil, err
+	}
+
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -48,7 +105,7 @@ func (c *Client) do(method, path string, body interface{}) (*http.Response, erro
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "token "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
