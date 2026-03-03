@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/factory-AI/tofu-snyk/internal/snyk"
+	"github.com/factory-AI/terraform-provider-snyk/internal/snyk"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"

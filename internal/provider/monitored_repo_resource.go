@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/factory-AI/tofu-snyk/internal/snyk"
+	"github.com/factory-AI/terraform-provider-snyk/internal/snyk"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"

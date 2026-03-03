@@ -5,7 +5,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/factory-AI/tofu-snyk/internal/provider"
+	"github.com/factory-AI/terraform-provider-snyk/internal/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 )
 
